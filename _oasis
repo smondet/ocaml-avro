@@ -1,0 +1,25 @@
+OASISFormat: 0.4
+Name:        ocaml-avro
+Version:     0.0.0
+Synopsis:    Manipulate Apache's Avro
+Authors:     Sebastien Mondet <seb@mondet.org>
+License:     ISC
+Plugins:     META (0.4)
+
+Library avro
+  Path:       src/lib
+  BuildTools: ocamlbuild
+  Modules:    Avro_schema
+  
+Test "test-avro-lib"
+  Command: schema_test
+  
+Document "avro-doc"
+  Title:      OCaml Avro API
+  InstallDir: $docdir
+  
+Executable schema_test
+  Path:       src/test
+  BuildTools: ocamlbuild
+  MainIs:     schema_test.ml
+  
