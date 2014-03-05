@@ -21,5 +21,6 @@ Document "avro-doc"
 Executable schema_test
   Path:       src/test
   BuildTools: ocamlbuild
+  BuildDepends: avro, yojson
   MainIs:     schema_test.ml
   
