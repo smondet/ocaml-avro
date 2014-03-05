@@ -68,4 +68,50 @@ and t = [
   | `Union of t list
 ]
 
+module Result = struct
+  type ('a, 'b) t = [
+    | `Ok of 'a
+    | `Error of 'b
+  ]
+  let return a : (_, _) t = `Ok a
+  let fail b : (_, _) t = `Error b
+  let bind x f : (_, _) t = match x with `Ok a -> f a | `Error _ as e -> e
+  let (>>=) = bind
+end
+open Result
+
+let validate_name s =
+  let module With_exn = struct
+    exception Wrong_char of char
+    let f s =
+      try
+        begin match s.[0] with
+        | 'a' .. 'z' | 'A' .. 'Z' | '_' -> ()
+        | c -> raise (Wrong_char c)
+        end;
+        String.iter (function
+          | 'a' .. 'z' | 'A' .. 'Z' | '_' | '0' .. '9' -> ()
+          | c -> raise (Wrong_char c)) s;
+        return s
+      with e -> `Error (`Invalid_avro_name s)
+  end in
+  With_exn.f s
+
+let of_json json =
+  match json with
+  | `Assoc l -> assert false
+  | `List l -> assert false
+  | `String s ->
+    validate_name s
+    >>= fun name ->
+    return (`Named_type name)
+  | `Bool _
+  | `Float _
+  | `Int _
+  | `Null -> fail (`Unexpected_json json)
+
+open Printf
+let error_to_string ~json_to_string = function
+| `Unexpected_json j -> sprintf "(Unexpected_json %s)" (json_to_string j)
+| `Invalid_avro_name n -> sprintf "(Invalid_avro_name %S)" n
 
