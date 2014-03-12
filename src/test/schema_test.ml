@@ -28,7 +28,8 @@ let test_error ~json expected =
 let () =
   test_ok ~json:"\"some_json_string\"" (`Named_type "some_json_string");
   test_error ~json:"\"0some_json_string\"" (`Invalid_avro_name "0some_json_string");
-  test_error ~json:"0" (`Unexpected_json (`Int 0));
+  test_error ~json:"0" (`Unexpected_json ("toplevel", `Int 0));
+  test_ok ~json:"[\"one\", \"int\"]" (`Union [`Named_type "one"; `Int]);
   begin match test_failures with
   | {contents = []} -> print_string "Tests OK\n"
   | {contents} ->

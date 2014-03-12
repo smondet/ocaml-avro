@@ -61,10 +61,12 @@ and object_description = [
   | `Map of t list
   | `Union of t list (* this does not encore that unions cannot contain unions *)
   | `Fixed of fixed_type
+  | `Named_type of string
 ]
 and t = [
   | `Named_type of string
-  | `Object of object_description * (string * string) list
+  | `Object of object_description * (string * json) list
+  (* actual objet × optional attributes *)
   | `Union of t list
 ]
 
@@ -77,8 +79,15 @@ module Result = struct
   let fail b : (_, _) t = `Error b
   let bind x f : (_, _) t = match x with `Ok a -> f a | `Error _ as e -> e
   let (>>=) = bind
+  let required ~error o = match o with None -> `Error error | Some o -> `Ok o
 end
 open Result
+
+module List = struct
+  include ListLabels
+  let map l ~f = rev (rev_map ~f l)
+  let fold = fold_left
+end
 
 let validate_name s =
   let module With_exn = struct
@@ -97,21 +106,133 @@ let validate_name s =
   end in
   With_exn.f s
 
-let of_json json =
+let identify_type s =
+  match s with  
+  | "boolean" -> `Boolean
+  | "int" -> `Int (* 32 bit signed *)
+  | "long" -> `Long (* 64 bit signed *)
+  | "float" -> `Float (* single precision *)
+  | "double" -> `Double (* double precision *)
+  | "bytes" -> `Bytes (* sequence of 8-bit unsigned *)
+  | "string" -> `String (* unicode string *)
+  | other -> `Named_type other
+
+let string_field reference ~name ~continue json =
   match json with
-  | `Assoc l -> assert false
-  | `List l -> assert false
+  | `String s -> reference := Some s; return continue
+  | other -> fail (`Unexpected_json (name, other))
+
+let array_of_strings ~name json =
+  match json with
+  | `List array_of_strings ->
+    List.fold array_of_strings ~init:(return []) ~f:(fun prev x ->
+        prev >>= fun prev ->
+        match x with 
+        | `String s -> return (s :: prev)
+        | other -> fail (`Unexpected_json (name, other)))
+    >>= fun alias_list ->
+    return (List.rev alias_list)
+  | other -> fail (`Unexpected_json (name, other))
+
+let parse_record_field l =
+  let name = ref None in
+  let doc = ref None in
+  let _type = ref None in
+  let default = ref None in
+  let order = ref None in
+  let aliases = ref [] in
+  List.fold l ~init:(return []) ~f:(fun prev_m att ->
+      prev_m >>= fun prev ->
+      match att with
+      | "name", json ->
+        string_field name ~name:"record-field.name" ~continue:prev json 
+      | "doc", json ->
+        string_field doc ~name:"record-field.doc" ~continue:prev json 
+      | "aliases", json ->
+        array_of_strings ~name:"record-field.aliases" json
+        >>= fun alias_list ->
+        aliases := alias_list;
+        return prev
+      | "default", json -> default := Some json; return prev
+      | "type", json_type -> assert false
+      | "order", json -> assert false
+      | unknown, json ->
+        fail (`Unexpected_json ("record-field", `Assoc [unknown, json])))
+
+(* type record_field = { *)
+(*   field_name: json_string; *)
+(*   field_doc: json_string option; *) 
+(*   field_type: t; (1* TODO spec not totally clear if type can be Union _ *1) *)
+(*   field_default: literal_value option; *)
+(*   field_order: [ `Ascending | `Descending | `Ingnore ] option; *)
+(*   field_aliases: json_string option; *)
+(* } *)
+let parse_record_type attr = 
+  let name = ref None in
+  let namespace = ref None in
+  let doc = ref None in
+  let aliases = ref [] in
+  let fields = ref [] in
+  List.fold attr ~init:(return []) ~f:(fun prev_m att ->
+      prev_m >>= fun prev ->
+      match att with
+      | "name", `String n -> name := Some n; return prev
+      | "name", other -> fail (`Unexpected_json ("record.name", other))
+      | "namespace", `String n -> namespace := Some n; return prev
+      | "namespace", other -> fail (`Unexpected_json ("record.namespace", other))
+      | "doc", `String  d -> doc := Some d; return prev
+      | "doc", other -> fail (`Unexpected_json ("record.doc", other))
+      | "aliases", `List array_of_strings ->
+        List.fold array_of_strings ~init:(return []) ~f:(fun prev x ->
+            prev >>= fun prev ->
+            match x with 
+            | `String s -> return (s :: prev)
+            | other -> fail (`Unexpected_json ("record.alias", other)))
+        >>= fun alias_list ->
+        aliases := List.rev alias_list;
+        return prev
+      | "aliases", other -> fail (`Unexpected_json ("record.aliases", other))
+      | "fields", `List fields ->
+        assert false
+      | "fields", other -> fail (`Unexpected_json ("record.fields", other))
+      | some_thing_else -> return (some_thing_else :: prev))
+  >>= fun remaining_attributes ->
+  required !name ~error:(`Missing ("record_name"))
+  >>= fun record_name ->
+  required !namespace ~error:(`Missing ("record_namespace"))
+  >>= fun record_namespace ->
+  return {
+    record_name; record_namespace;
+    record_doc = !doc;
+    record_aliases = !aliases;
+    record_fields = !fields;
+  }
+
+let rec of_json json =
+  match json with
+  | `Assoc (("type", `String "record") :: attr) -> assert false
+  | `Assoc (("type", `String t) :: attr) -> 
+    validate_name t
+    >>= fun name ->
+    return (`Object (identify_type name, attr))
+  | `List l ->
+    List.fold l ~init:(return [])
+      ~f:(fun prev x -> prev >>= fun l -> of_json x >>= fun j -> return (j :: l)) 
+    >>= fun union ->
+    return (`Union (List.rev union))
   | `String s ->
     validate_name s
     >>= fun name ->
-    return (`Named_type name)
+    return (identify_type name)
+  | `Assoc _
   | `Bool _
   | `Float _
   | `Int _
-  | `Null -> fail (`Unexpected_json json)
+  | `Null -> fail (`Unexpected_json ("toplevel", json))
 
 open Printf
 let error_to_string ~json_to_string = function
-| `Unexpected_json j -> sprintf "(Unexpected_json %s)" (json_to_string j)
+| `Unexpected_json (msg, j) -> sprintf "(Unexpected_json %s: %s)" msg (json_to_string j)
 | `Invalid_avro_name n -> sprintf "(Invalid_avro_name %S)" n
+| `Missing thing -> sprintf "(Missing %s)" thing
 
