@@ -31,7 +31,7 @@ type record_field = {
   field_type: t; (* TODO spec not totally clear if type can be Union _ *)
   field_default: literal_value option;
   field_order: [ `Ascending | `Descending | `Ingnore ] option;
-  field_aliases: json_string option;
+  field_aliases: json_string list;
 }
 and record_type = {
   record_name : json_string;
@@ -192,8 +192,16 @@ let parse_record_type attr =
         aliases := List.rev alias_list;
         return prev
       | "aliases", other -> fail (`Unexpected_json ("record.aliases", other))
-      | "fields", `List fields ->
-        assert false
+      | "fields", `List json_fields ->
+        List.fold json_fields ~init:(return []) 
+          ~f:(fun prev_result field_description ->
+              prev_result >>= fun prev ->
+              match field_description with
+              | `Assoc l -> parse_record_field l
+              | other -> fail (`Unexpected_json ("record.fields", other)))
+        >>= fun parsed_fields ->
+        fields := parsed_fields;
+        return prev
       | "fields", other -> fail (`Unexpected_json ("record.fields", other))
       | some_thing_else -> return (some_thing_else :: prev))
   >>= fun remaining_attributes ->
@@ -210,7 +218,10 @@ let parse_record_type attr =
 
 let rec of_json json =
   match json with
-  | `Assoc (("type", `String "record") :: attr) -> assert false
+  | `Assoc (("type", `String "record") :: attr) -> 
+    parse_record_type attr
+    >>= fun record ->
+    return (`Record record)
   | `Assoc (("type", `String t) :: attr) -> 
     validate_name t
     >>= fun name ->
