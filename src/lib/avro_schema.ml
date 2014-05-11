@@ -25,13 +25,16 @@ type literal_value = [
   | `Raw of string
   | `Json of json
 ]
+type additional_attribute = string * json
 type record_field = {
   field_name: json_string;
   field_doc: json_string option; 
-  field_type: t; (* TODO spec not totally clear if type can be Union _ *)
+  field_type: object_description; (* TODO spec not totally clear if type can be Union _ *)
   field_default: literal_value option;
   field_order: [ `Ascending | `Descending | `Ingnore ] option;
   field_aliases: json_string list;
+  field_additional: additional_attribute list;
+  (* We keep everything, as additional attributes *)
 }
 and record_type = {
   record_name : json_string;
@@ -39,6 +42,7 @@ and record_type = {
   record_doc: json_string option; 
   record_aliases: json_string list;
   record_fields: record_field list;
+  record_additional: additional_attribute list;
 }
 and enum_type = {
   enum_name: json_string;
@@ -57,12 +61,15 @@ and object_description = [
   | primitive
   | `Record of record_type
   | `Enum of enum_type
-  | `Array of t list
-  | `Map of t list
-  | `Union of t list (* this does not encore that unions cannot contain unions *)
+  | `Array of object_description list
+  | `Map of object_description list
+  | `Union of object_description list
+  (* this does not encode that unions should not contain unions *)
   | `Fixed of fixed_type
   | `Named_type of string
+  | `Object of object_description * (string * json) list
 ]
+(* `t` is the allowed “top-level” subset of `object_description` *)
 and t = [
   | `Named_type of string
   | `Object of object_description * (string * json) list
@@ -134,7 +141,8 @@ let array_of_strings ~name json =
     return (List.rev alias_list)
   | other -> fail (`Unexpected_json (name, other))
 
-let parse_record_field l =
+(* Here we begin a bunch of mutally recursive functions *)
+let rec parse_record_field l =
   let name = ref None in
   let doc = ref None in
   let _type = ref None in
@@ -153,21 +161,34 @@ let parse_record_field l =
         >>= fun alias_list ->
         aliases := alias_list;
         return prev
-      | "default", json -> default := Some json; return prev
-      | "type", json_type -> assert false
+      | "default", json -> default := Some (`Json json); return prev
+      | "type", json_type -> 
+        parse_type json_type
+        >>= fun t ->
+        _type := Some t;
+        return prev
       | "order", json -> assert false
+      | some_thing_else -> return (some_thing_else :: prev))
+    (*
       | unknown, json ->
         fail (`Unexpected_json ("record-field", `Assoc [unknown, json])))
+*)
+  >>= fun remaining_attributes ->
+  required !name ~error:(`Missing ("record_field_name"))
+  >>= fun field_name ->
+  required !_type ~error:(`Missing ("record_field_type"))
+  >>= fun field_type ->
+  return {
+    field_name;
+    field_doc = !doc;
+    field_type;
+    field_default = !default;
+    field_order = !order;
+    field_aliases = !aliases;
+    field_additional = remaining_attributes;
+  }
 
-(* type record_field = { *)
-(*   field_name: json_string; *)
-(*   field_doc: json_string option; *) 
-(*   field_type: t; (1* TODO spec not totally clear if type can be Union _ *1) *)
-(*   field_default: literal_value option; *)
-(*   field_order: [ `Ascending | `Descending | `Ingnore ] option; *)
-(*   field_aliases: json_string option; *)
-(* } *)
-let parse_record_type attr = 
+and parse_record_type attr = 
   let name = ref None in
   let namespace = ref None in
   let doc = ref None in
@@ -197,10 +218,13 @@ let parse_record_type attr =
           ~f:(fun prev_result field_description ->
               prev_result >>= fun prev ->
               match field_description with
-              | `Assoc l -> parse_record_field l
+              | `Assoc l -> 
+                parse_record_field l
+                >>= fun field ->
+                return (field :: prev)
               | other -> fail (`Unexpected_json ("record.fields", other)))
         >>= fun parsed_fields ->
-        fields := parsed_fields;
+        fields := List.rev parsed_fields;
         return prev
       | "fields", other -> fail (`Unexpected_json ("record.fields", other))
       | some_thing_else -> return (some_thing_else :: prev))
@@ -214,10 +238,37 @@ let parse_record_type attr =
     record_doc = !doc;
     record_aliases = !aliases;
     record_fields = !fields;
+    record_additional = remaining_attributes;
   }
 
-let rec of_json json =
+and parse_type json =
   match json with
+  | `Assoc (("type", `String "record") :: attr) -> 
+    parse_record_type attr
+    >>= fun record ->
+    return (`Record record)
+  | `Assoc (("type", `String t) :: attr) -> 
+    validate_name t
+    >>= fun name ->
+    return (`Object (identify_type name, attr))
+  | `List l ->
+    List.fold l ~init:(return [])
+      ~f:(fun prev x -> 
+          prev >>= fun l -> parse_type x >>= fun j -> return (j :: l)) 
+    >>= fun union ->
+    return (`Union (List.rev union))
+  | `String s ->
+    validate_name s
+    >>= fun name ->
+    return (identify_type name)
+  | other -> assert false (* TODO *)
+
+
+let of_json json =
+  match json with
+  | `Assoc (("type", _) :: _) | `List _ | `String _ ->
+    parse_type json
+      (*
   | `Assoc (("type", `String "record") :: attr) -> 
     parse_record_type attr
     >>= fun record ->
@@ -235,6 +286,7 @@ let rec of_json json =
     validate_name s
     >>= fun name ->
     return (identify_type name)
+*)
   | `Assoc _
   | `Bool _
   | `Float _

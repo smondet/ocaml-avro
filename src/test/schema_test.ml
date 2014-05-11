@@ -46,14 +46,17 @@ module Cons = struct
 
   open Avro_schema
 
-  let record ~name ~namespace ?doc ?(aliases=[]) fields =
+  let record ~name ~namespace ?doc ?(aliases=[]) ?(add=[]) fields =
     `Record {record_name = name;
              record_namespace = namespace;
              record_doc = doc;
              record_aliases = aliases;
-             record_fields = fields;}
+             record_fields = fields;
+             record_additional = add;
+            }
 
-  let field ?doc ?default_value ?order ?(aliases=[]) (name, avro_type) =
+  let field 
+      ?doc ?default_value ?order ?(aliases=[]) ?(add=[]) (name, avro_type) =
     {
       field_name = name;
       field_doc = doc;
@@ -61,6 +64,7 @@ module Cons = struct
       field_default = default_value;
       field_order = order;
       field_aliases = aliases;
+      field_additional = add;
     }
 
 end
@@ -126,7 +130,11 @@ let () =
     (good_record_parsed []);
   json_test_ok 
     (good_json_record ["fields", `List [`Assoc ["name", `String "FieldName1"; "type", `String "string"]]])
-    (good_record_parsed []);
+    (good_record_parsed [
+        Cons.field ("FieldName1", `String)
+        (* ?doc ?default_value ?order ?(aliases=[]) ?(add=[]) (name, avro_type) *)
+      ]);
+
 
   begin match test_failures with
   | {contents = []} -> print_string "Tests OK\n"
